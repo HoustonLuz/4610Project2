@@ -16,17 +16,18 @@ MODULE_LICENSE("Dual BSD/GPL");
 #define UP 3
 #define DOWN 4
 
-/*
-typedef struct Lists {
-	struct list_head queue[10];	// list of passengers on each floor
-	struct list_head elev;		// list of passengers on elevator
-} Lists;
-*/
+typedef struct ListEntries {
+	struct list_head list;
+	char symbol;	// |: human, x: dog, o: cat,
+} ListEntries;
+
+struct list_head queue[10];	// list of passengers on each floor
+struct list_head elev;		// list of passengers on elevator
+
 static struct proc_dir_entry* proc_entry;
-char* msg
-char* msg2
+char* msg;
+char* msg2;
 static int procfs_buf_len;
-static char passFloor[10][BUF_LEN]; // char representation of passengers waiting on each floor
 static int waitFloor[10];	// num of passengers waiting at each floor
 int state;
 int animals;	// 0: none, 1: dog, 2: cat
@@ -42,9 +43,9 @@ char onFloor;
 extern long (*STUB_start_elev)(void);
 long start_elev(void) {
 	printk(KERN_NOTICE "Start elevator Test\n");
-	if (state == OFFLINE)
-	{
+	if (state == OFFLINE) {
 		state = IDLE;
+		stopping = 0;
 		currentFloor = 1;
 		passengers = 0;
 		weight = 0;
@@ -60,6 +61,30 @@ long start_elev(void) {
 extern long (*STUB_issue_elev)(int,int,int,int);
 long issue_elev(int num_pets, int pet_type, int start_floor, int destination_floor) {
 	printk(KERN_NOTICE "Issue Request Test\n");
+	if (start_floor == destination_floor) {
+		serviced++;
+		return 0;
+	}
+	struct ListEntries* qEntry;
+	qEntry = kmalloc(sizeof(ListEntries), __GFP_RECLAIM);
+	qEntry->symbol = '|';
+	list_add_tail(&qEntry->list, &queue[start_floor - 1]);
+	if (num_pets > 0) {
+		int i = 0;
+		while (i < num_pets) {
+			struct ListEntries* pEntry;
+			pEntry = kmalloc(sizeof(ListEntries), __GFP_RECLAIM);
+			if (pet_type == 1)
+				pEntry->symbol = 'o';
+			if (pet_type == 2)
+				pEntry->symbol = 'x';
+			list_add_tail(&pEntry->list, &queue[start_floor - 1]);
+			kfree(pEntry);
+			i++;
+		}
+	}
+	waitFloor[start_floor] += (1 + num_pets);
+	kfree(qEntry);
 	return 0;
 }
 
@@ -93,6 +118,7 @@ static int procfile_open(struct inode* inode, struct file* file) {
 	else
 		sprintf(str, "ERROR");
 	sprintf(msg, "Elevator state: %s\n", str);
+
 	if (animals == 1)
 		sprintf(str, "dog");
 	else if (animals == 2)
@@ -100,6 +126,7 @@ static int procfile_open(struct inode* inode, struct file* file) {
 	else
 		sprintf(str, "none");
 	sprintf(msg2, "Elevator animals: %s\n", str);
+
 	strcat(msg, msg2);
 	sprintf(msg2, "Current floor: %d\n", currentFloor);
 	strcat(msg, msg2);
@@ -111,19 +138,35 @@ static int procfile_open(struct inode* inode, struct file* file) {
 	strcat(msg, msg2);
 	sprintf(msg2, "Number of passengers serviced: %d\n\n\n", serviced);
 	strcat(msg, msg2);
+
+
 	// print queue interface
 	int i = 10;
+	char sym[2];
+	sym[1] = ' ';
+	struct list_head *temp;
+	struct ListEntries* entry;
 	while (i > 0) {
 		if (i == currentFloor)
 			onFloor = '*';
 		else
 			onFloor = ' ';
 		sprintf(msg2, "[%c] Floor %*d: %*d   ", onFloor, 2, i, 4, waitFloor[i]);
-		strcat(msg2, passFloor[(char)i]);
+		// print out symbols of passenger queue
+/*
+		list_for_each(temp, &queue[i]) {
+			entry = list_entry(temp, struct ListEntries, list);
+			sym[0] = entry->symbol;
+			strcat(msg2, sym);
+		}
+*/
 		strcat(msg2, "\n");
 		strcat(msg, msg2);
 		i--;
 	}
+//	list_del(temp);
+//	kfree(entry);
+	return 0;
 }
 
 static ssize_t procfile_read(struct file* file, char* ubuf, size_t count, loff_t* ppos) {
@@ -138,10 +181,18 @@ static ssize_t procfile_read(struct file* file, char* ubuf, size_t count, loff_t
 	return procfs_buf_len;
 }
 
+static int procfile_release(struct inode* inode, struct file* file) {
+	printk(KERN_INFO "proc_release\n");
+	kfree(msg);
+	kfree(msg2);
+	return 0;
+}
+
 static struct file_operations procfile_fops = {
 	.owner = THIS_MODULE,
 	.read = procfile_read,
 	.open = procfile_open,
+	.release = procfile_release,
 };
 
 static int elevator_init(void) {
@@ -151,14 +202,14 @@ static int elevator_init(void) {
 	STUB_start_elev = &(start_elev);
 	STUB_issue_elev = &(issue_elev);
 	STUB_close_elev = &(close_elev);
-/*
+
 	int i = 0;
 	while (i < 10) {
 		INIT_LIST_HEAD(&queue[i]);
 		i++;
 	}
 	INIT_LIST_HEAD(&elev);
-*/
+
 	return 0;
 }
 
