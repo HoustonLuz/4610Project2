@@ -28,7 +28,8 @@ typedef struct ListEntries {
 
 struct list_head queue[10];	// list of passengers on each floor
 struct list_head elev;		// list of passengers on elevator
-struct mutex my_mutex;
+struct mutex queueMutex;
+struct mutex elevMutex;
 struct task_struct* run_thread;
 static struct proc_dir_entry* proc_entry;
 char* msg;
@@ -41,7 +42,7 @@ int animals;	// 0: none, 1: cat, 2: dog
 int currentFloor;
 int nextFloor;
 int passengers;
-int weight;	// max load is 15
+int weight;		// current weight of elev, max load is 15
 int waiting;	// total number waiting
 int serviced;	// total number serviced
 int stopping;
@@ -55,6 +56,7 @@ long start_elev(void) {
 		state = IDLE;
 		stopping = 0;
 		currentFloor = 1;
+		nextFloor = 2;
 		passengers = 0;
 		weight = 0;
 		waiting = 0;
@@ -76,9 +78,11 @@ long issue_elev(int num_pets, int pet_type, int start_floor, int destination_flo
 	struct ListEntries* qEntry;
 	qEntry = kmalloc(sizeof(ListEntries), __GFP_RECLAIM);
 	qEntry->symbol = '|';
-	mutex_lock_interruptible(&my_mutex);
+	qEntry->startFloor = start_floor;
+	qEntry->destFloor = destination_floor;
+	mutex_lock_interruptible(&queueMutex);
 	list_add_tail(&qEntry->list, &queue[start_floor - 1]);
-	mutex_unlock(&my_mutex);
+	mutex_unlock(&queueMutex);
 	if (num_pets > 0) {
 		int i = 0;
 		while (i < num_pets) {
@@ -88,16 +92,16 @@ long issue_elev(int num_pets, int pet_type, int start_floor, int destination_flo
 				pEntry->symbol = 'x';
 			if (pet_type == 2)
 				pEntry->symbol = 'o';
-			mutex_lock_interruptible(&my_mutex);
+			pEntry->startFloor = start_floor;
+			pEntry->destFloor = destination_floor;
+			mutex_lock_interruptible(&queueMutex);
 			list_add_tail(&pEntry->list, &queue[start_floor - 1]);
-			mutex_unlock(&my_mutex);
-			kfree(pEntry);
+			mutex_unlock(&queueMutex);
 			i++;
 		}
 	}
 	waitFloor[start_floor - 1] += (1 + num_pets);
 	waiting += (1 + num_pets);
-	kfree(qEntry);
 	return 0;
 }
 
@@ -116,10 +120,23 @@ int move(int floor) {
     if (floor == currentFloor)
         return 0;
     else {
-        ssleep(1);
+        ssleep(2);
         currentFloor = floor;
         return 1;
     }
+}
+
+int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
+	int sum = 0;
+	struct ListEntries* entry;
+	struct list_head *temp, end;
+	mutex_lock_interruptible(&queueMutex);
+	list_for_each_safe(temp, end, &queue[floor - 1]) {
+		entry = list_entry(temp, ListEntries, list);
+//		if ((entry->startFloor == floor) && (sum + weights <= 15)
+	}
+	mutex_unlock(&queueMutex);
+	return 0;
 }
 
 int runElevator(void* data) {
@@ -204,6 +221,7 @@ static int procfile_open(struct inode* inode, struct file* file) {
 	sym[1] = ' ';
 	struct list_head *temp;
 	struct ListEntries* entry;
+	mutex_lock_interruptible(&queueMutex);
 	while (i > 0) {
 		if (i == currentFloor)
 			onFloor = '*';
@@ -211,23 +229,19 @@ static int procfile_open(struct inode* inode, struct file* file) {
 			onFloor = ' ';
 		sprintf(msg2, "[%c] Floor %*d: %*d   ", onFloor, 2, i, 4, waitFloor[i - 1]);
 		// print out symbols of passenger queue
-/*
-		mutex_lock_interruptible(&my_mutex);
 
 		list_for_each(temp, &queue[i - 1]) {
-			entry = list_entry(temp, struct ListEntries, list);
+			entry = list_entry(temp, ListEntries, list);
 			sym[0] = entry->symbol;
 			strcat(msg2, sym);
 		}
 
-		mutex_unlock(&my_mutex);
-*/
 		strcat(msg2, "\n");
 		strcat(msg, msg2);
 		i--;
 	}
-//	list_del(temp);
-//	kfree(entry);
+	mutex_unlock(&queueMutex);
+
 	return 0;
 }
 
@@ -271,7 +285,8 @@ static int elevator_init(void) {
 		i++;
 	}
 	INIT_LIST_HEAD(&elev);
-	mutex_init(&my_mutex);
+	mutex_init(&queueMutex);
+	mutex_init(&elevMutex);
 	run_thread = kthread_run(runElevator, NULL, "Elevator Thread");
 	return 0;
 }
@@ -281,7 +296,8 @@ static void elevator_exit(void) {
 	STUB_start_elev = NULL;
 	STUB_issue_elev = NULL;
 	STUB_close_elev = NULL;
-	mutex_destroy(&my_mutex);
+	mutex_destroy(&queueMutex);
+	mutex_destroy(&elevMutex);
 	kthread_stop(run_thread);
 	return;
 }
