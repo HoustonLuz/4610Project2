@@ -130,13 +130,14 @@ int unload(int floor) {	// returns 1 if entry unloaded, 0 if elev empty or could
 			//Someone needs to get off
 			if(entry->symbol == '|')
 				weight -= 3;
-			else if(entry->symbol == 'x')
-				weight -= 2;
 			else if(entry->symbol == 'o')
+				weight -= 2;
+			else if(entry->symbol == 'x')
 				weight -= 1;
 			list_del(temp);
 			kfree(entry);
 			serviced++;
+			passengers--;
 			ifUnload = 1;
 		}
 	}
@@ -183,34 +184,32 @@ int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
 
 	mutex_lock_interruptible(&queueMutex);
 	do {
-		printk(KERN_WARNING "do loop\n");
 		loadFlag = 0;
 		flag = 0;
+		animFlag = 0;
 		list_for_each_safe(temp, end, &queue[floor - 1]) {
 			entry = list_entry(temp, ListEntries, list);
-			if ((entry->symbol == '\0') || !(entry->destFloor > currentFloor && nextState == UP) || (entry->destFloor < currentFloor && nextState == DOWN)) {
+			if ((entry->symbol == '\0') || !((entry->destFloor > currentFloor && nextState == UP) || (entry->destFloor < currentFloor && nextState == DOWN))) {
 				// either floor is empty, or next passenger wants to go other direction
 				break;
 			}
-			if (entry->symbol == '|' && flag == 0)
-				flag = 1;
+			if (entry->symbol == '|')
+				flag = !flag;
 			if (flag == 1) {
-				if (entry->symbol != '|') {
-					if (entry->symbol == 'o') {
-						sum += 2;
-						animFlag = 2;
-					} else {
-						sum += 1;
-						animFlag = 1;
-					}
+				if (entry->symbol == '|')
+					sum += 3;
+				else if (entry->symbol == 'o') {
+					sum += 2;
+					animFlag = 2;
+				} else {
+					sum += 1;
+					animFlag = 1;
 				}
 			}
-			if (animFlag != animals && animals != 0) {	// mismatch animal type, skip floor
+			if ((animFlag != animals) && (animals != 0))	// mismatch animal type, skip floor
 				break;
-			}
-			if (sum + weight > 15) {
+			if (sum + weight > 15)
 				break;
-			}
 			else
 				loadFlag = 1;
 		}	// end list for safe
@@ -228,25 +227,35 @@ int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
 					struct ListEntries* insert;
 					insert = kmalloc(sizeof(ListEntries), __GFP_RECLAIM);
 					insert->symbol = entry->symbol;
-					if (insert->symbol == '|')
+					if (insert->symbol == '|') {
 						weight += 3;
-					else if (insert->symbol == 'o')
+						animals = 0;
+					}
+					else if (insert->symbol == 'o') {
 						weight += 2;
-					else
+						animals = 2;
+					}
+					else {
 						weight += 1;
- 					insert->startFloor = entry->startFloor;
-            		insert->destFloor = entry->destFloor;
-            		mutex_lock_interruptible(&elevMutex);
-      	    		list_add_tail(&insert->list, &elev);
-            		list_del(temp);
-            		kfree(entry);
-            		mutex_unlock(&elevMutex);
+						animals = 1;
+					}
+					insert->startFloor = entry->startFloor;
+					insert->destFloor = entry->destFloor;
+					mutex_lock_interruptible(&elevMutex);
+					list_add_tail(&insert->list, &elev);
+					list_del(temp);
+					kfree(entry);
+					mutex_unlock(&elevMutex);
+					waitFloor[floor - 1]--;
+					waiting--;
+					passengers++;
 				}
 			}	// end list for safe
 			retFlag = 1;
 		}
 	} while (weight < 13);
 	mutex_unlock(&queueMutex);
+//	kfree(entry);
 	printk(KERN_NOTICE "Left do loop\n");
 	if (retFlag == 1)
 		return 1;
@@ -275,8 +284,6 @@ int runElevator(void* data) {
 			case UP:
 			    ssleep(2);
 			    currentFloor = nextFloor;
-				if (unload(currentFloor) || load(currentFloor))
-					state = LOADING;
 				if (currentFloor == 10) {
 					state = DOWN;
 					nextState = DOWN;
@@ -284,12 +291,12 @@ int runElevator(void* data) {
 				}
 				else
 					nextFloor = currentFloor + 1;
+				if (unload(currentFloor) || (load(currentFloor) && !stopping))
+					state = LOADING;
 				break;
 			case DOWN:
 				ssleep(2);
 				currentFloor = nextFloor;
-				if (unload(currentFloor) || load(currentFloor))
-					state = LOADING;
 				if (currentFloor == 1) {
 					state = UP;
 					nextState = UP;
@@ -297,6 +304,8 @@ int runElevator(void* data) {
 				}
 				else
 					nextFloor = currentFloor - 1;
+				if (unload(currentFloor) || (load(currentFloor) && !stopping))
+					state = LOADING;
 				break;
 		}
 	}
@@ -433,4 +442,3 @@ static void elevator_exit(void) {
 
 module_init(elevator_init);
 module_exit(elevator_exit);
-
