@@ -127,16 +127,72 @@ int move(int floor) {
 }
 
 int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
-	int sum = 0;
+	int sum = 0,		//Sum of new party weight
+	    full = 0,		//flag to exit main while if the elev has become full.
+	    animFlag = 0,	//0: none, 1: cat, 2: dog
+	    loaded = 0;		//flag for if
 	struct ListEntries* entry;
 	struct list_head *temp, end;
-	mutex_lock_interruptible(&queueMutex);
-	list_for_each_safe(temp, end, &queue[floor - 1]) {
-		entry = list_entry(temp, ListEntries, list);
-//		if ((entry->startFloor == floor) && (sum + weights <= 15)
+
+	if(weight >= 13){
+		//Can not even fit next human. Elev is full.
+		return 0;
 	}
+
+	mutex_lock_interruptible(&queueMutex);
+
+	//Party is defined as a person and all their pets.
+	//Idea is to go through the first party in the list and if that party is light
+	// enough to fit in the elevator as well as the correct animal, then we remove
+	// them from that floor's list, add them on the elevator,
+	// then check if the next party will fit.
+	do {
+		entry = queue[currentFloor - 1]; //Assuming currentFloor isn't index
+
+		sum += 3; //Adding first human by default.
+		entry = entry->next; //Iterate to next entry in list.
+
+		while(entry->symbol != '|'){
+			if(entry->symbol == 'x'){
+				sum += 2;
+				animFlag = 2;
+			} else {
+				sum += 1;
+				animFlag = 1;
+			}
+
+			if(animFlag != animals && animals != 0){
+				//Top of queue is wrong animal type, skip floor.
+				return 0;
+			}
+
+			entry = entry->next; //Iterate
+		}
+
+		entry = queue[currentFloor - 1]; //Start entry at beginning of queue again
+		if(sum + weight <= 15){
+			//Above processed party can fit.
+			loaded += 1;
+
+			//Add first human to elev and the remove them from queue
+
+			while(entry->symbol != '|'){
+				//Add pet to elev and remove pet from queue
+
+				entry = entry->next; //Iterate
+			}
+		} else {
+			//next party can not fit.
+			full = 1;
+		}
+	} while (full == 0);
+
 	mutex_unlock(&queueMutex);
-	return 0;
+
+	if(loaded == 0)
+		return 0;
+	else
+		return 1;
 }
 
 int runElevator(void* data) {
