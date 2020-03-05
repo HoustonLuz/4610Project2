@@ -45,7 +45,7 @@ int passengers;
 int weight;		// current weight of elev, max load is 15
 int waiting;	// total number waiting
 int serviced;	// total number serviced
-int stopping;
+int stopping;	// set to 1 if elev stopping
 static char str[10];
 char onFloor;
 
@@ -116,50 +116,46 @@ long close_elev(void) {
 	return 0;
 }
 
-int move(int floor) {
-    if (floor == currentFloor)
-        return 0;
-    else {
-        ssleep(2);
-        currentFloor = floor;
-        return 1;
-    }
-}
-
 int unload(int floor) {	// returns 1 if entry unloaded, 0 if elev empty or couldn't unload
+	printk(KERN_NOTICE "Unload\n");
 	struct ListEntries *entry;
-	struct list_head *temp;
+	struct list_head *temp, *end;
 	int ifUnload = 0;
 
 	//Check if any of the passengers need to get off
-	list_for_each(temp, &elev) {
+	mutex_lock_interruptible(&elevMutex);
+	list_for_each_safe(temp, end, &elev) {
 		entry = list_entry(temp, ListEntries, list);
 		if(entry->destFloor == currentFloor){
 			//Someone needs to get off
 			if(entry->symbol == '|')
 				weight -= 3;
-			else(entry->symbol == 'x')
+			else if(entry->symbol == 'x')
 				weight -= 2;
-			else(entry->symbol == 'o')
+			else if(entry->symbol == 'o')
 				weight -= 1;
 			list_del(temp);
-
-			ifUnload += 1;
+			kfree(entry);
+			serviced++;
+			ifUnload = 1;
 		}
 	}
+	mutex_unlock(&elevMutex);
 
 	animals = 0;
 
-	list_for_each(temp, &elev) {
+	mutex_lock_interruptible(&elevMutex);
+	list_for_each_safe(temp, end, &elev) {
 		entry = list_entry(temp, ListEntries, list);
-		if(entry->symbol == 'o'){
+		if(entry->symbol == 'x'){
 			//Cats on board
 			animals = 1;
-		} else if(entry->symbol == 'x'){
+		} else if(entry->symbol == 'o'){
 			//Dogs on board
 			animals = 2;
 		}
 	}
+	mutex_unlock(&elevMutex);
 
 	if(ifUnload == 0){
 		//No one needs to get off
@@ -171,12 +167,14 @@ int unload(int floor) {	// returns 1 if entry unloaded, 0 if elev empty or could
 }
 
 int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
+	printk(KERN_NOTICE "load\n");
 	int sum = 0,		//Sum of new party weight
-	    full = 0,		//flag to exit main while if the elev has become full.
 	    animFlag = 0,	//0: none, 1: cat, 2: dog
-	    loaded = 0;		//flag for if
+		retFlag = 0,	// flag for return
+		flag = 0,		// set to 1 if read first human
+	    loadFlag = 0;		// if loading passengers this loop
 	struct ListEntries* entry;
-	struct list_head *temp, end;
+	struct list_head *temp, *end;
 
 	if(weight >= 13){
 		//Can not even fit next human. Elev is full.
@@ -184,59 +182,76 @@ int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
 	}
 
 	mutex_lock_interruptible(&queueMutex);
-
-	//Party is defined as a person and all their pets.
-	//Idea is to go through the first party in the list and if that party is light
-	// enough to fit in the elevator as well as the correct animal, then we remove
-	// them from that floor's list, add them on the elevator,
-	// then check if the next party will fit.
 	do {
-		entry = queue[currentFloor - 1]; //Assuming currentFloor isn't index
-
-		sum += 3; //Adding first human by default.
-		entry = entry->next; //Iterate to next entry in list.
-
-		while(entry->symbol != '|'){
-			if(entry->symbol == 'x'){
-				sum += 2;
-				animFlag = 2;
-			} else {
-				sum += 1;
-				animFlag = 1;
+		printk(KERN_WARNING "do loop\n");
+		loadFlag = 0;
+		flag = 0;
+		list_for_each_safe(temp, end, &queue[floor - 1]) {
+			entry = list_entry(temp, ListEntries, list);
+			if ((entry->symbol == '\0') || !(entry->destFloor > currentFloor && nextState == UP) || (entry->destFloor < currentFloor && nextState == DOWN)) {
+				// either floor is empty, or next passenger wants to go other direction
+				break;
 			}
-
-			if(animFlag != animals && animals != 0){
-				//Top of queue is wrong animal type, skip floor.
-				return 0;
+			if (entry->symbol == '|' && flag == 0)
+				flag = 1;
+			if (flag == 1) {
+				if (entry->symbol != '|') {
+					if (entry->symbol == 'o') {
+						sum += 2;
+						animFlag = 2;
+					} else {
+						sum += 1;
+						animFlag = 1;
+					}
+				}
 			}
-
-			entry = entry->next; //Iterate
+			if (animFlag != animals && animals != 0) {	// mismatch animal type, skip floor
+				break;
+			}
+			if (sum + weight > 15) {
+				break;
+			}
+			else
+				loadFlag = 1;
+		}	// end list for safe
+		if (flag == 0)
+			break;
+		if (loadFlag == 1) {
+			flag = 0;
+			printk(KERN_WARNING "load to elevator\n");
+			list_for_each_safe(temp, end, &queue[floor - 1]) {
+				entry = list_entry(temp, ListEntries, list);
+				// move passengers into elevator until next human
+				if (entry->symbol == '|')
+					flag = !flag;
+				if (flag) {
+					struct ListEntries* insert;
+					insert = kmalloc(sizeof(ListEntries), __GFP_RECLAIM);
+					insert->symbol = entry->symbol;
+					if (insert->symbol == '|')
+						weight += 3;
+					else if (insert->symbol == 'o')
+						weight += 2;
+					else
+						weight += 1;
+ 					insert->startFloor = entry->startFloor;
+            		insert->destFloor = entry->destFloor;
+            		mutex_lock_interruptible(&elevMutex);
+      	    		list_add_tail(&insert->list, &elev);
+            		list_del(temp);
+            		kfree(entry);
+            		mutex_unlock(&elevMutex);
+				}
+			}	// end list for safe
+			retFlag = 1;
 		}
-
-		entry = queue[currentFloor - 1]; //Start entry at beginning of queue again
-		if(sum + weight <= 15){
-			//Above processed party can fit.
-			loaded += 1;
-
-			//Add first human to elev and the remove them from queue
-
-			while(entry->symbol != '|'){
-				//Add pet to elev and remove pet from queue
-
-				entry = entry->next; //Iterate
-			}
-		} else {
-			//next party can not fit.
-			full = 1;
-		}
-	} while (full == 0);
-
+	} while (weight < 13);
 	mutex_unlock(&queueMutex);
-
-	if(loaded == 0)
-		return 0;
-	else
+	printk(KERN_NOTICE "Left do loop\n");
+	if (retFlag == 1)
 		return 1;
+	else
+		return 0;
 }
 
 int runElevator(void* data) {
@@ -245,12 +260,23 @@ int runElevator(void* data) {
 			case OFFLINE:
 				break;
 			case IDLE:
-				state = UP;
+				nextState = UP;
+				if (load(currentFloor) && !stopping)
+					state = LOADING;
+				else {
+					state = UP;
+					nextFloor = currentFloor + 1;
+				}
 				break;
 			case LOADING:
+				ssleep(1);
+				state = nextState;
 				break;
 			case UP:
-				move(nextFloor);
+			    ssleep(2);
+			    currentFloor = nextFloor;
+				if (unload(currentFloor) || load(currentFloor))
+					state = LOADING;
 				if (currentFloor == 10) {
 					state = DOWN;
 					nextState = DOWN;
@@ -260,7 +286,10 @@ int runElevator(void* data) {
 					nextFloor = currentFloor + 1;
 				break;
 			case DOWN:
-				move(nextFloor);
+				ssleep(2);
+				currentFloor = nextFloor;
+				if (unload(currentFloor) || load(currentFloor))
+					state = LOADING;
 				if (currentFloor == 1) {
 					state = UP;
 					nextState = UP;
