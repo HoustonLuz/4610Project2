@@ -126,6 +126,50 @@ int move(int floor) {
     }
 }
 
+int unload(int floor) {	// returns 1 if entry unloaded, 0 if elev empty or couldn't unload
+	struct ListEntries *entry;
+	struct list_head *temp;
+	int ifUnload = 0;
+
+	//Check if any of the passengers need to get off
+	list_for_each(temp, &elev) {
+		entry = list_entry(temp, ListEntries, list);
+		if(entry->destFloor == currentFloor){
+			//Someone needs to get off
+			if(entry->symbol == '|')
+				weight -= 3;
+			else(entry->symbol == 'x')
+				weight -= 2;
+			else(entry->symbol == 'o')
+				weight -= 1;
+			list_del(temp);
+
+			ifUnload += 1;
+		}
+	}
+
+	animals = 0;
+
+	list_for_each(temp, &elev) {
+		entry = list_entry(temp, ListEntries, list);
+		if(entry->symbol == 'o'){
+			//Cats on board
+			animals = 1;
+		} else if(entry->symbol == 'x'){
+			//Dogs on board
+			animals = 2;
+		}
+	}
+
+	if(ifUnload == 0){
+		//No one needs to get off
+		return 0;
+	} else {
+		//Someone got off.
+		return 1;
+	}
+}
+
 int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
 	int sum = 0,		//Sum of new party weight
 	    full = 0,		//flag to exit main while if the elev has become full.
