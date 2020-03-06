@@ -49,8 +49,8 @@ int stopping;	// set to 1 if elev stopping
 static char str[10];
 char onFloor;
 
-extern long (*STUB_start_elev)(void);
-long start_elev(void) {
+extern long (*STUB_start_elevator)(void);
+long start_elevator(void) {
 	printk(KERN_NOTICE "Start elevator Test\n");
 	if (state == OFFLINE) {
 		state = IDLE;
@@ -68,8 +68,8 @@ long start_elev(void) {
 		return 1;
 }
 
-extern long (*STUB_issue_elev)(int,int,int,int);
-long issue_elev(int num_pets, int pet_type, int start_floor, int destination_floor) {
+extern long (*STUB_issue_request)(int,int,int,int);
+long issue_request(int num_pets, int pet_type, int start_floor, int destination_floor) {
 	printk(KERN_NOTICE "Issue Request Test\n");
 	if (start_floor == destination_floor) {
 		serviced++;
@@ -105,8 +105,8 @@ long issue_elev(int num_pets, int pet_type, int start_floor, int destination_flo
 	return 0;
 }
 
-extern long (*STUB_close_elev)(void);
-long close_elev(void) {
+extern long (*STUB_stop_elevator)(void);
+long stop_elevator(void) {
 	printk(KERN_NOTICE "Stop elevator Test\n");
 	// offload all current passengers
 	if (stopping == 1)
@@ -412,9 +412,9 @@ static int elevator_init(void) {
 	proc_entry = proc_create("elevator", 0666, NULL, &procfile_fops);
 	if (proc_entry == NULL)
 		return -ENOMEM;
-	STUB_start_elev = &(start_elev);
-	STUB_issue_elev = &(issue_elev);
-	STUB_close_elev = &(close_elev);
+	STUB_start_elevator = &(start_elevator);
+	STUB_issue_request = &(issue_request);
+	STUB_stop_elevator = &(stop_elevator);
 
 	int i = 0;
 	while (i < 10) {
@@ -430,9 +430,9 @@ static int elevator_init(void) {
 
 static void elevator_exit(void) {
 	proc_remove(proc_entry);
-	STUB_start_elev = NULL;
-	STUB_issue_elev = NULL;
-	STUB_close_elev = NULL;
+	STUB_start_elevator = NULL;
+	STUB_issue_request = NULL;
+	STUB_stop_elevator = NULL;
 	mutex_destroy(&queueMutex);
 	mutex_destroy(&elevMutex);
 	kthread_stop(run_thread);
