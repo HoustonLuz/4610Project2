@@ -171,9 +171,9 @@ int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
 	printk(KERN_NOTICE "load\n");
 	int sum = 0,		//Sum of new party weight
 	    animFlag = 0,	//0: none, 1: cat, 2: dog
-		retFlag = 0,	// flag for return
-		flag = 0,		// set to 1 if read first human
-	    loadFlag = 0;		// if loading passengers this loop
+	    retFlag = 0,	//Flag for return; 0 for no pass loaded, >0 for pass loaded
+	    flag = 0,		//0: no party loaded yet, 1: party loading, 2: party already loaded 
+	    loadFlag = 0;	//If loading passengers this loop
 	struct ListEntries* entry;
 	struct list_head *temp, *end;
 
@@ -184,21 +184,29 @@ int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
 
 	mutex_lock_interruptible(&queueMutex);
 	do {
+		//Check first entry for emptiness and wrong direction.
+		//If either is true, break=		
 		loadFlag = 0;
 		flag = 0;
 		animFlag = 0;
+		sum = 0;
+
 		list_for_each_safe(temp, end, &queue[floor - 1]) {
+			//Iterate through list and add weight for first party
+			//sets flag to 1 when loading through first time,
+			// encounters next person and sets falg to 2.
+			//Once flag is 2, no more parties added to sum.
 			entry = list_entry(temp, ListEntries, list);
-			if ((entry->symbol == '\0') || !((entry->destFloor > currentFloor && nextState == UP) || (entry->destFloor < currentFloor && nextState == DOWN))) {
-				// either floor is empty, or next passenger wants to go other direction
-				break;
+			if (entry->symbol == '|' && flag != 2){
+				flag = 1;
 			}
-			if (entry->symbol == '|')
-				flag = !flag;
 			if (flag == 1) {
-				if (entry->symbol == '|')
-					sum += 3;
-				else if (entry->symbol == 'o') {
+				if (entry->symbol == '|'){
+					if(sum != 0)
+						flag = 2;
+					else
+						sum += 3;
+				} else if (entry->symbol == 'o') {
 					sum += 2;
 					animFlag = 2;
 				} else {
@@ -208,37 +216,47 @@ int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
 			}
 			if ((animFlag != animals) && (animals != 0))	// mismatch animal type, skip floor
 				break;
-			if (sum + weight > 15)
-				break;
-			else
+			if (sum + weight <= 15)
 				loadFlag = 1;
+			else
+				break;
 		}	// end list for safe
-		if (flag == 0)
-			break;
+
 		if (loadFlag == 1) {
 			flag = 0;
 			printk(KERN_WARNING "load to elevator\n");
 			list_for_each_safe(temp, end, &queue[floor - 1]) {
 				entry = list_entry(temp, ListEntries, list);
 				// move passengers into elevator until next human
-				if (entry->symbol == '|')
-					flag = !flag;
-				if (flag) {
-					struct ListEntries* insert;
-					insert = kmalloc(sizeof(ListEntries), __GFP_RECLAIM);
-					insert->symbol = entry->symbol;
-					if (insert->symbol == '|') {
+
+				struct ListEntries* insert;
+				insert = kmalloc(sizeof(ListEntries), __GFP_RECLAIM);
+				insert->symbol = entry->symbol;
+				if (insert->symbol == '|') {
+					//First person gets on and sets flag to 1,
+					// second person sets flag to 2.
+					if(flag == 1){
+						flag = 2;
+					} else {
 						weight += 3;
 						animals = 0;
+						flag = 1;
 					}
-					else if (insert->symbol == 'o') {
-						weight += 2;
-						animals = 2;
-					}
-					else {
-						weight += 1;
-						animals = 1;
-					}
+				}
+
+				//If only 1 person has got on, pet comes with
+				else if (insert->symbol == 'o' && flag == 1) {
+					weight += 2;
+					animals = 2;
+				}
+				else if (insert->symbol == 'x' && flag == 1){
+					weight += 1;
+					animals = 1;
+				}
+
+				//If first person has got on but not second,
+				// the being gets to come on.
+				if(flag == 1){
 					insert->startFloor = entry->startFloor;
 					insert->destFloor = entry->destFloor;
 					mutex_lock_interruptible(&elevMutex);
@@ -249,18 +267,19 @@ int load(int floor) {	// returns 1 if entry loaded, 0 if elev full
 					waitFloor[floor - 1]--;
 					waiting--;
 					passengers++;
+					retFlag++;
 				}
-			}	// end list for safe
-			retFlag = 1;
-		}
+			}
+		}	// end list for safe
+
 	} while (weight < 13);
 	mutex_unlock(&queueMutex);
 //	kfree(entry);
 	printk(KERN_NOTICE "Left do loop\n");
-	if (retFlag == 1)
-		return 1;
-	else
+	if (retFlag == 0)
 		return 0;
+	else
+		return 1;
 }
 
 int runElevator(void* data) {
